@@ -5,11 +5,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 from random import shuffle
+from scipy.signal import butter, lfilter
 
 # Tensorflow logging verbosity
 tf.logging.set_verbosity(tf.logging.INFO)
 # Default dataset directory
-DATASET_DIR = "datasets/bonn/"
+DATASET_DIR = "datasets/bonn/subsample2/"
 
 
 # Loads files from given dataset directory
@@ -25,20 +26,24 @@ def load_files(dataset_directory):
         with open(dataset_directory + onlyfiles[i], 'r') as content_file:
             read_content = content_file.read().splitlines()
             mapped_content = list(map(np.float32, read_content))
-            list.append(content, np.array(mapped_content))
+            #plt.plot(mapped_content)
+            filtered_content = butter_lowpass_filter(mapped_content, 40, 173.61)
+            #plt.plot(filtered_content)
+            #plt.show()
+            #exit(0)
+            list.append(content, np.array(filtered_content))
             list.append(labels, onlyfiles[i][:1])
 
     # Changing string values to numbers
     labels_set = set(labels)
     labels_dictionary = {}
-    index = 1
+    index = 0
     for set_element in labels_set:
         labels_dictionary[set_element] = index
         index += 1
 
     for i in range(0, len(labels)):
         labels[i] = int(labels_dictionary.get(labels[i]))
-
     # print(len(content))
     # plt.plot(content[0])
     # plt.show()
@@ -70,11 +75,24 @@ def get_test_and_training_data(content, labels):
     return content[:content_length], labels[:content_length], content[content_length:], labels[content_length:]
 
 
+def butter_lowpass(cut_off, fs, order=5):
+    nyq = 0.5 * fs
+    normal_cutoff = cut_off / nyq
+    b, a = butter(order, normal_cutoff, btype='low', analog = False)
+    return b, a
+
+
+def butter_lowpass_filter(data, cut_off, fs, order=4):
+    b, a = butter_lowpass(cut_off, fs, order=order)
+    y = lfilter(b, a, data)
+    return y
+
+
 # Tensorflow example
 def cnn_model_fn(features, labels, mode):
     """Model function for CNN."""
     # Input Layer
-    input_layer = tf.reshape(features["x"], [-1, 4097, 1])
+    input_layer = tf.reshape(features["x"], [-1, 1024, 1])
 
     # Convolutional Layer #1
     conv1 = tf.layers.conv1d(
@@ -97,17 +115,16 @@ def cnn_model_fn(features, labels, mode):
     pool2 = tf.layers.max_pooling1d(inputs=conv2, pool_size=2, strides=2)
 
     # Dense Layer
-    pool2_flat = tf.reshape(pool2, [-1, 65536])
+    pool2_flat = tf.reshape(pool2, [-1, 256 * 64])
     dense = tf.layers.dense(inputs=pool2_flat, units=1024, activation=tf.nn.relu)
     dropout = tf.layers.dropout(
         inputs=dense, rate=0.4, training=mode == tf.estimator.ModeKeys.TRAIN)
 
     # Logits Layer
-    logits = tf.layers.dense(inputs=dropout, units=5)
-
+    logits = tf.layers.dense(inputs=dropout, units=2)
     predictions = {
         # Generate predictions (for PREDICT and EVAL mode)
-        "classes": tf.argmax(input=logits, axis=1),
+        "classes": tf.argmax(input=logits, axis=1, name="classes_tensor"),
         # Add `softmax_tensor` to the graph. It is used for PREDICT and by the
         # `logging_hook`.
         "probabilities": tf.nn.softmax(logits, name="softmax_tensor")
@@ -141,20 +158,15 @@ def main(unused_argv):
     content, labels = shuffle_data(content, labels)
     eval_data, eval_labels, train_data, train_labels = get_test_and_training_data(content, labels)
 
-    # mnist = tf.contrib.learn.datasets.load_dataset("mnist")
-    # train_data = mnist.train.images  # Returns np.array
-    # train_labels = np.asarray(mnist.train.labels, dtype=np.int32)
-    # eval_data = mnist.test.images  # Returns np.array
-    # eval_labels = np.asarray(mnist.test.labels, dtype=np.int32)
-
     # Create the Estimator
     eeg_classifier = tf.estimator.Estimator(
         model_fn=cnn_model_fn, model_dir="/tmp/eeg_convnet_model")
 
     # Set up logging for predictions
-    tensors_to_log = {"probabilities": "softmax_tensor"}
+    tensors_to_log = {"probabilities": "softmax_tensor",
+                      "classes": "classes_tensor"}
     logging_hook = tf.train.LoggingTensorHook(
-        tensors=tensors_to_log, every_n_iter=50)
+        tensors=tensors_to_log, every_n_iter=100)
 
     # Train the model
     train_input_fn = tf.estimator.inputs.numpy_input_fn(
